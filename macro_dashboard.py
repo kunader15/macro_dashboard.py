@@ -91,12 +91,14 @@ st.sidebar.markdown("""
 
 if use_auto:
     pmi_input = st.sidebar.slider("PMI (從上述連結查詢後填入)", 30.0, 70.0, 50.0)
+    pmi_trend = st.sidebar.selectbox("PMI 近期趨勢", ["Up", "Down", "Flat"])
     cpi_input = cpi_yoy_latest
     spread_input = spread_latest
     vix_input = vix_latest
     rate_direction = rate_trend_str
 else:
     pmi_input = st.sidebar.slider("手動 PMI", 30.0, 70.0, 50.0)
+    pmi_trend = st.sidebar.selectbox("手動 PMI 近期趨勢", ["Up", "Down", "Flat"])
     cpi_input = st.sidebar.number_input("手動 CPI YoY (%)", value=round(cpi_yoy_latest, 2))
     spread_input = st.sidebar.number_input("手動 10Y-2Y 差值", value=round(spread_latest, 2))
     vix_input = st.sidebar.number_input("手動 VIX", value=round(vix_latest, 2))
@@ -266,27 +268,44 @@ def calc_pro_alloc(age, ytr, regime, spread):
         
     return final_stk, final_bnd, final_gld, base_stk, base_bnd, base_gld
 
-# Neutral 防護機制 (最重要)
-def get_pro_regime(pmi, cpi, cpi_trend_val, rate_dir):
-    if 2.0 <= cpi <= 3.0:
-        if pmi > 50:
-            if cpi_trend_val == "Up" or rate_dir == "Up":
-                sub_status = " (介於：復甦 ➡️ 過熱)"
-            else:
-                sub_status = " (介於：過熱 ➡️ 復甦)"
-        else:
-            if cpi_trend_val == "Up" or rate_dir == "Up":
-                sub_status = " (介於：衰退 ➡️ 滯脹)"
-            else:
-                sub_status = " (介於：滯脹 ➡️ 衰退)"
-        return f"Neutral 模糊區{sub_status}"
+# 核心景氣判斷引擎 (利率 -> PMI -> CPI)
+def get_pro_regime(pmi, pmi_trend_val, cpi, cpi_trend_val, rate_dir):
+    # --- 完全一致的 4 大象限 ---
+    if pmi > 50 and cpi_trend_val == "Down" and rate_dir == "Down":
+        return "Recovery (明確復甦)"
+    elif pmi > 50 and cpi_trend_val == "Up" and rate_dir == "Up":
+        return "Overheat (明確過熱)"
+    elif pmi <= 50 and cpi_trend_val == "Up" and rate_dir == "Up":
+        return "Stagflation (明確滯脹)"
+    elif pmi <= 50 and cpi_trend_val == "Down" and rate_dir == "Down":
+        return "Recession (明確衰退)"
         
-    if pmi > 50 and cpi < 3.0: return "Recovery (復甦)"
-    elif pmi > 50 and cpi >= 3.0: return "Overheat (過熱)"
-    elif pmi <= 50 and cpi >= 3.0: return "Stagflation (滯脹)"
-    else: return "Recession (衰退)"
+    # --- 模糊區轉折判定 (重點邏輯) ---
+    # A. 復甦 ↔ 過熱 (成長區模糊)
+    if pmi > 50 and (2.0 <= cpi <= 3.0 or cpi_trend_val == "Up") and rate_dir == "Up":
+        return "Neutral 模糊區 (介於：復甦 ➡️ 過熱)"
+        
+    # B. 過熱 ↔ 衰退 (最重要轉折 - 高風險區)
+    if pmi > 50 and pmi_trend_val == "Down" and cpi_trend_val == "Down" and rate_dir != "Down":
+        return "Neutral 模糊區 (介於：過熱 ➡️ 衰退)"
+        
+    # C. 衰退 ↔ 復甦 (底部)
+    if pmi <= 50 and pmi_trend_val == "Up" and cpi_trend_val == "Down" and rate_dir == "Down":
+        return "Neutral 模糊區 (介於：衰退 ➡️ 復甦)"
+        
+    # D. 滯脹 ↔ 衰退 (過渡)
+    if pmi <= 50 and cpi >= 3.0 and cpi_trend_val == "Down" and rate_dir == "Down":
+        return "Neutral 模糊區 (介於：滯脹 ➡️ 衰退)"
+        
+    # --- 預設 Fallback (未捕捉的其它狀況) ---
+    if pmi > 50:
+        if cpi >= 3.0: return "Neutral 模糊區 (偏向：過熱)"
+        else: return "Neutral 模糊區 (偏向：復甦)"
+    else:
+        if cpi >= 3.0: return "Neutral 模糊區 (偏向：滯脹)"
+        else: return "Neutral 模糊區 (偏向：衰退)"
 
-current_regime = get_pro_regime(pmi_input, cpi_input, cpi_trend_auto, rate_direction)
+current_regime = get_pro_regime(pmi_input, pmi_trend, cpi_input, cpi_trend_auto, rate_direction)
 s_pct, b_pct, g_pct, b_stk, b_bnd, b_gld = calc_pro_alloc(current_age, years_to_retire, current_regime, spread_input)
 
 st.divider()
