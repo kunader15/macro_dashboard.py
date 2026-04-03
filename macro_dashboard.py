@@ -40,7 +40,43 @@ def fetch_data():
         print(f"Fetch error: {e}")
         return None, None
 
+@st.cache_data(ttl=3600)
+def fetch_drawdown_data():
+    """抓取 0050.TW, S&P500, QQQ, VT 近一年數據，計算從近期最高點回檔的百分比"""
+    end = datetime.now()
+    start = end - timedelta(days=365)  # 1 年內最高
+    tickers = {
+        '0050.TW': '0050.TW (台灣50)',
+        '^GSPC': 'S&P 500',
+        'QQQ': 'QQQ (納斯達克100)',
+        'VT': 'VT (全球股市)'
+    }
+    results = {}
+    for ticker, label in tickers.items():
+        try:
+            data = yf.download(ticker, start=start, end=end, progress=False)['Close']
+            if isinstance(data, pd.DataFrame):
+                data = data.iloc[:, 0]
+            data = data.dropna()
+            if len(data) < 2:
+                results[label] = {'current': None, 'high': None, 'drawdown': None, 'high_date': None}
+                continue
+            high_val = data.max()
+            high_date = data.idxmax()
+            current_val = data.iloc[-1]
+            drawdown_pct = ((current_val - high_val) / high_val) * 100
+            results[label] = {
+                'current': float(current_val),
+                'high': float(high_val),
+                'drawdown': float(drawdown_pct),
+                'high_date': high_date.strftime('%Y-%m-%d') if hasattr(high_date, 'strftime') else str(high_date)
+            }
+        except Exception as e:
+            results[label] = {'current': None, 'high': None, 'drawdown': None, 'high_date': None}
+    return results
+
 df_macro, df_vix = fetch_data()
+df_drawdown = fetch_drawdown_data()
 
 # 數據狀態解析
 cpi_yoy_series = None
@@ -412,7 +448,7 @@ st.markdown("""
 > - 若您券商裡真實的股票佔比，**仍然落在下表右側的安全範圍內**：請**強忍住不動**！這表示市場波動尚未失控，無視景氣微調目標，省出手續費與過度預判的失誤。
 > - 若您券商裡真實的股票佔比，**已經「跌破」或「漲破」了下表右側的觸發閾值**：恭喜，現在正是收割或抄底的好時機！請立刻登入帳戶下單，將所有的資產一舉校正重新對齊至 **「🎯 最終景氣目標」** 即可！
 >
-> 🔥 **血色抄底 (Value Averaging) 特殊法則**：若大盤**突然崩盤重挫 >20%**，請無視一切以上規則，**立刻授權動用所有現金池與部份防禦債券，強力買入 VT+0050**！這就是為什麼我們要在平時保留大量現金的終極致勝關鍵。
+> 🔥 **血色抄底 (Value Averaging) 特殊法則**：若大盤**突然崩盤重挫 >20%**，請無視一切以上規則，**立刻授權動用所有現金池與部份防禦債券，強力買入 VT+0050**！這就是為什麼我們要在平時保留大量現金的終極致勝關鍵。（👇 回檔即時監控請見頁面底部面板）
 """)
 
 reb_data = {
@@ -428,6 +464,117 @@ reb_data = {
     ]
 }
 st.table(pd.DataFrame(reb_data))
+
+# --- 具體再平衡行動建議 ---
+st.markdown("---")
+st.markdown("### 🔧 具體再平衡模擬器：輸入您的真實持倉")
+st.caption("請輸入您券商帳戶中各類資產的**真實現值百分比**，系統會自動計算每個類別需要買入或賣出多少，並給出具體操作建議。")
+
+input_col1, input_col2, input_col3, input_col4, input_col5 = st.columns([1, 1, 1, 1, 1])
+with input_col1:
+    real_stk = st.number_input("📈 股票現況 (%)", min_value=0.0, max_value=100.0, value=round(s_pct, 1), step=1.0, format="%.1f")
+with input_col2:
+    real_bnd = st.number_input("🛡️ 債券現況 (%)", min_value=0.0, max_value=100.0, value=round(b_pct, 1), step=1.0, format="%.1f")
+with input_col3:
+    real_gld = st.number_input("⚜️ 黃金現況 (%)", min_value=0.0, max_value=100.0, value=round(g_pct, 1), step=1.0, format="%.1f")
+with input_col4:
+    real_csh = st.number_input("💵 現金現況 (%)", min_value=0.0, max_value=100.0, value=round(c_pct, 1), step=1.0, format="%.1f")
+with input_col5:
+    total_asset = st.number_input("💰 總資產 (萬元)", min_value=0.0, value=100.0, step=10.0, format="%.0f")
+
+real_total = real_stk + real_bnd + real_gld + real_csh
+if abs(real_total - 100.0) > 0.5:
+    st.warning(f"⚠️ 您輸入的比例合計 {real_total:.1f}%，不等於 100%。建議修正後再參考下方建議。")
+
+# 計算差值
+diff_stk = s_pct - real_stk
+diff_bnd = b_pct - real_bnd
+diff_gld = g_pct - real_gld
+diff_csh = c_pct - real_csh
+
+# 判斷是否需要再平衡
+stk_breached = abs(real_stk - b_stk) > 5
+bnd_breached = abs(real_bnd - b_bnd) > 5
+gld_breached = abs(real_gld - b_gld) > 5
+any_breached = stk_breached or bnd_breached or gld_breached
+
+# 具體操作表
+st.markdown("#### 📋 操作建議明細")
+
+action_data = []
+assets = [
+    ("📈 股票 (VT+0050)", real_stk, s_pct, diff_stk, stk_breached),
+    ("🛡️ 債券 (BND/TLT)", real_bnd, b_pct, diff_bnd, bnd_breached),
+    ("⚜️ 黃金 (GLD/IAU)", real_gld, g_pct, diff_gld, gld_breached),
+    ("💵 現金池", real_csh, c_pct, diff_csh, False),
+]
+
+for name, real_val, target_val, diff_val, breached in assets:
+    amount = diff_val / 100.0 * total_asset  # 萬元
+    if abs(diff_val) < 0.5:
+        action_str = "✅ 維持不動"
+        action_icon = "🟢"
+    elif diff_val > 0:
+        action_str = f"🟢 買入 +{diff_val:.1f}% （約 {abs(amount):.1f} 萬元）"
+        action_icon = "📗"
+    else:
+        action_str = f"🔴 賣出 {diff_val:.1f}% （約 {abs(amount):.1f} 萬元）"
+        action_icon = "📕"
+    
+    trigger_status = "🚨 已超閾值！" if breached else "🛡️ 安全區內"
+    
+    action_data.append({
+        "資產類別": name,
+        "📊 真實現況": f"{real_val:.1f}%",
+        "🎯 景氣目標": f"{target_val:.1f}%",
+        "📐 偏差": f"{diff_val:+.1f}%",
+        "💰 調整金額": f"{amount:+.1f} 萬元",
+        "🔔 閾值狀態": trigger_status,
+        f"{action_icon} 操作建議": action_str,
+    })
+
+st.table(pd.DataFrame(action_data))
+
+# --- 匯總行動指令 ---
+if any_breached:
+    st.error("🚨 **需要再平衡！** 有資產類別已超過 ±5% 偏離閾值，建議立即執行以下操作：")
+    action_steps = []
+    sell_items = []
+    buy_items = []
+    for name, real_val, target_val, diff_val, breached in assets:
+        amount = diff_val / 100.0 * total_asset
+        if diff_val < -0.5:
+            sell_items.append((name, abs(diff_val), abs(amount)))
+        elif diff_val > 0.5:
+            buy_items.append((name, diff_val, abs(amount)))
+    
+    if sell_items:
+        st.markdown("**🔴 第一步：先賣出（減碼）**")
+        for name, pct, amt in sell_items:
+            st.markdown(f"- 賣出 **{name}** 約 **{pct:.1f}%** → 約 **{amt:.1f} 萬元**")
+    if buy_items:
+        st.markdown("**🟢 第二步：再買入（加碼）**")
+        for name, pct, amt in buy_items:
+            st.markdown(f"- 買入 **{name}** 約 **{pct:.1f}%** → 約 **{amt:.1f} 萬元**")
+    
+    # 股票的具體子資產拆分
+    if diff_stk > 0.5:
+        stk_amount = diff_stk / 100.0 * total_asset
+        st.markdown(f"""
+        **📈 股票買入拆分建議：**  
+        - VT (全球) 買入約 **{stk_amount * 0.667:.1f} 萬元** (佔股票 2/3)  
+        - 0050.TW (台灣) 買入約 **{stk_amount * 0.333:.1f} 萬元** (佔股票 1/3)
+        """)
+    elif diff_stk < -0.5:
+        stk_amount = abs(diff_stk) / 100.0 * total_asset
+        st.markdown(f"""
+        **📈 股票賣出拆分建議：**  
+        - VT (全球) 賣出約 **{stk_amount * 0.667:.1f} 萬元** (佔股票 2/3)  
+        - 0050.TW (台灣) 賣出約 **{stk_amount * 0.333:.1f} 萬元** (佔股票 1/3)
+        """)
+else:
+    st.success("✅ **目前無需再平衡**：所有資產類別均在 ±5% 安全偏離範圍內。維持紀律，不要過度交易！")
+    st.caption("💡 小提醒：即使景氣目標數值有微幅偏差，只要未超出基底 ±5% 閾值，頻繁交易只會增加手續費與稅務成本。")
 
 st.divider()
 st.subheader("🚨 核心防護機制狀態")
@@ -461,3 +608,100 @@ with msg_col2:
         st.warning(f"⚠️ **進入提款期防禦**：資金已鎖入 60/30/10 最大化生存率模型，請確保預留 1~3 年現金。")
     else:
         st.info(f"✨ **累積期火力全開**：距離轉換期（滑動路徑）還有 {years_to_retire - 10} 年，安全期滿艙累積複利。")
+
+# --- 血色抄底監控面板 (折疊式，放在最底部) ---
+st.divider()
+with st.expander("🩸 血色抄底 (Value Averaging) — 崩盤回檔監控", expanded=False):
+    st.caption("追蹤核心持有 ETF 從近一年最高點的回檔幅度。當回檔 >20% 時觸發血色抄底法則。")
+    
+    if df_drawdown:
+        dd_cols = st.columns(len(df_drawdown))
+        blood_buy_triggered = False
+        
+        for i, (label, info) in enumerate(df_drawdown.items()):
+            with dd_cols[i]:
+                dd_val = info.get('drawdown')
+                if dd_val is not None:
+                    if dd_val <= -20:
+                        stage_icon = "🩸"
+                        stage_text = "血色抄底！"
+                        stage_color = "#DC2626"
+                        blood_buy_triggered = True
+                    elif dd_val <= -10:
+                        stage_icon = "🟠"
+                        stage_text = "顯著修正"
+                        stage_color = "#EA580C"
+                    elif dd_val <= -5:
+                        stage_icon = "🟡"
+                        stage_text = "輕微回檔"
+                        stage_color = "#CA8A04"
+                    else:
+                        stage_icon = "🟢"
+                        stage_text = "接近高點"
+                        stage_color = "#16A34A"
+                    
+                    dd_steps = [
+                        {'range': [-50, -20], 'color': '#FECACA'},
+                        {'range': [-20, -10], 'color': '#FED7AA'},
+                        {'range': [-10, -5],  'color': '#FDE68A'},
+                        {'range': [-5, 0],    'color': '#BBF7D0'},
+                    ]
+                    fig_dd = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=dd_val,
+                        number={'suffix': '%', 'font': {'size': 28, 'color': stage_color}},
+                        title={'text': f"{stage_icon} {label}<br><span style='font-size:11px;color:gray'>{stage_text}</span>", 'font': {'size': 13}},
+                        gauge={
+                            'axis': {'range': [-50, 0], 'tickwidth': 1, 'ticksuffix': '%'},
+                            'bar': {'color': 'rgba(0,0,0,0)', 'thickness': 0},
+                            'bgcolor': 'white',
+                            'borderwidth': 2,
+                            'bordercolor': 'gray',
+                            'steps': dd_steps,
+                            'threshold': {
+                                'line': {'color': 'black', 'width': 3},
+                                'thickness': 0.8,
+                                'value': dd_val
+                            }
+                        }
+                    ))
+                    fig_dd.update_layout(height=220, margin=dict(l=10, r=10, t=70, b=10))
+                    st.plotly_chart(fig_dd, use_container_width=True)
+                    
+                    st.caption(f"📍 最高點: {info['high']:,.2f} ({info['high_date']})")
+                    st.caption(f"📍 目前值: {info['current']:,.2f}")
+                else:
+                    st.warning(f"{label}：數據抓取失敗")
+        
+        if blood_buy_triggered:
+            st.error("""
+            🩸🩸🩸 **血色抄底法則已觸發！** 🩸🩸🩸
+            
+            有 ETF 已從最高點回檔超過 **20%**！  
+            根據 Value Averaging 特殊法則：  
+            **➡️ 立刻動用所有現金池與部份防禦債券，強力買入 VT + 0050！**
+            """)
+        else:
+            worst_dd = min((v['drawdown'] for v in df_drawdown.values() if v['drawdown'] is not None), default=0)
+            remaining = -20 - worst_dd
+            if remaining > 0:
+                st.info(f"✅ **血色法則尚未觸發**：目前最大回檔 {worst_dd:.1f}%，距離 -20% 觸發線還差 {remaining:.1f} 個百分點。維持常規紀律配置。")
+            else:
+                st.info(f"✅ **血色法則尚未觸發**：最大回檔 {worst_dd:.1f}%。")
+
+        # 彙總表格
+        dd_table = []
+        for label, info in df_drawdown.items():
+            if info['drawdown'] is not None:
+                dd_table.append({
+                    'ETF': label,
+                    '近一年最高': f"{info['high']:,.2f}",
+                    '最高點日期': info['high_date'],
+                    '目前價格': f"{info['current']:,.2f}",
+                    '回檔幅度 (%)': f"{info['drawdown']:.2f}%",
+                    '觸發血色抄底？': '🩸 是！' if info['drawdown'] <= -20 else '❌ 否'
+                })
+        if dd_table:
+            st.table(pd.DataFrame(dd_table))
+    else:
+        st.warning("無法取得回檔數據，請檢查網路連線。")
