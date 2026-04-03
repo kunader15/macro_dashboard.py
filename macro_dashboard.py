@@ -269,13 +269,17 @@ def calc_pro_alloc(age, ytr, regime, spread):
 # Neutral 防護機制 (最重要)
 def get_pro_regime(pmi, cpi, cpi_trend_val, rate_dir):
     if 2.0 <= cpi <= 3.0:
-        if cpi_trend_val == "Up" and rate_dir == "Up":
-            sub_status = " (偏高通膨預警)"
-        elif cpi_trend_val == "Down" and rate_dir == "Down":
-            sub_status = " (偏低通膨預警)"
+        if pmi > 50:
+            if cpi_trend_val == "Up" or rate_dir == "Up":
+                sub_status = " (介於：復甦 ➡️ 過熱)"
+            else:
+                sub_status = " (介於：過熱 ➡️ 復甦)"
         else:
-            sub_status = ""
-        return f"Neutral (模糊區 / 維持不動){sub_status}"
+            if cpi_trend_val == "Up" or rate_dir == "Up":
+                sub_status = " (介於：衰退 ➡️ 滯脹)"
+            else:
+                sub_status = " (介於：滯脹 ➡️ 衰退)"
+        return f"Neutral 模糊區{sub_status}"
         
     if pmi > 50 and cpi < 3.0: return "Recovery (復甦)"
     elif pmi > 50 and cpi >= 3.0: return "Overheat (過熱)"
@@ -316,7 +320,11 @@ msg_col1, msg_col2 = st.columns(2)
 
 with msg_col1:
     if "Neutral" in current_regime:
-        st.success("✅ **啟動 Neutral 模糊機制 (最重要的一步)**：目前 CPI 穩健落在 2-3% 模糊交界，系統策略為「不動」，維持您原始生命週期配置基準。這是避免過度交易的最強策略！")
+        try:
+            between_str = current_regime.split("介於：")[1].replace(")", "")
+        except:
+            between_str = "轉換交界"
+        st.success(f"✅ **啟動 Neutral 模糊機制 (最重要)**：目前 CPI 穩健落在 2-3% 區間。雖然總經正處於 **「{between_str}」** 的過渡期，但系統策略強制為「不動」，以生命週期基線為主，這是避免多空雙巴的最強策略！")
     elif current_regime.startswith("Recession") and spread_input < 0:
         st.error("🚨 **啟動雙確認防護**：景氣落入衰退 + 殖利率確定倒掛 (-)，系統已重度防守！")
     else:
