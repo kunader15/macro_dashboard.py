@@ -91,18 +91,40 @@ st.sidebar.markdown("""
 
 if use_auto:
     pmi_input = st.sidebar.slider("PMI (從上述連結查詢後填入)", 30.0, 70.0, 50.0)
-    pmi_trend = st.sidebar.selectbox("PMI 近期趨勢", ["Up", "Down", "Flat"])
+    pmi_help_text = "【嚴謹判斷準則】\n\nUp (上升)：本月 > 上月 且 過去 3 個月平均呈上升 (復甦或過熱初期)\nDown (下降)：本月 < 上月 且 過去 3 個月平均呈下降 (衰退或滯脹初期)\nFlat (平穩)：PMI 變化 < ±0.5 (Neutral 過渡期)"
+    pmi_trend = st.sidebar.selectbox("PMI 近期趨勢", ["Up", "Down", "Flat"], help=pmi_help_text)
     cpi_input = cpi_yoy_latest
     spread_input = spread_latest
     vix_input = vix_latest
     rate_direction = rate_trend_str
 else:
     pmi_input = st.sidebar.slider("手動 PMI", 30.0, 70.0, 50.0)
-    pmi_trend = st.sidebar.selectbox("手動 PMI 近期趨勢", ["Up", "Down", "Flat"])
+    pmi_help_text = "【嚴謹判斷準則】\n\nUp (上升)：本月 > 上月 且 過去 3 個月平均呈上升 (復甦或過熱初期)\nDown (下降)：本月 < 上月 且 過去 3 個月平均呈下降 (衰退或滯脹初期)\nFlat (平穩)：PMI 變化 < ±0.5 (Neutral 過渡期)"
+    pmi_trend = st.sidebar.selectbox("手動 PMI 近期趨勢", ["Up", "Down", "Flat"], help=pmi_help_text)
     cpi_input = st.sidebar.number_input("手動 CPI YoY (%)", value=round(cpi_yoy_latest, 2))
     spread_input = st.sidebar.number_input("手動 10Y-2Y 差值", value=round(spread_latest, 2))
     vix_input = st.sidebar.number_input("手動 VIX", value=round(vix_latest, 2))
     rate_direction = st.sidebar.selectbox("手動利率趨勢", ["Up", "Down", "Flat"])
+
+with st.sidebar.expander("📚 點此查看：如何正確判斷 PMI 趨勢？", expanded=False):
+    st.markdown("""
+    **【雙重確認法】（需同時滿足）**
+    
+    🟢 **Up (上升)**：
+    1. 本月數值 > 上月數值
+    2. 近 3 個月均線 > 前期 3 個月均線。
+    *(經濟擴張實質確認)*
+
+    🔴 **Down (下降)**：
+    1. 本月數值 < 上月數值
+    2. 近 3 個月均線 < 前期 3 個月均線。
+    *(經濟放緩實質確認)*
+
+    ⚪ **Flat (平穩 / 震盪)**：
+    不符合上述兩者，包含：
+    1. 單月數值改變極小 (< **±0.5**)。
+    2. **或者單季震盪**：例如單月看似大漲 (V型跌深反彈)，但根本拉不動 3 個月均線上揚。此時請務必選擇 **Flat**，系統這時會保護您不被假突破而錯賣資產！
+    """)
 
 # --- 主畫面 ---
 st.header("📊 4D 儀表板觀測站")
@@ -215,58 +237,77 @@ with st.expander("📈 查看各指標歷史趨勢圖及原始資料列表"):
 
 # --- 核心邏輯引擎 ---
 def get_baseline_alloc(age, ytr):
-    # 底層：基礎資產結構 (生命週期與 Glide Path 滑動路徑)
+    # 底層：基礎資產結構 (生命週期與 Glide Path 滑動路徑) 包含 2% 預設現金流動池
+    base_csh = 2.0
     if ytr <= 0:
-        return 60.0, 30.0, 10.0 # 提款期
+        return 60.0, 28.0, 10.0, base_csh # 提款期
     elif 0 < ytr <= 10:
         # 轉換期 (Glide Path)：每年固定將股票轉為防禦
         stk = 60.0 + 2.0 * ytr
         bnd = 30.0 - 1.5 * ytr
         gld = 10.0 - 0.5 * ytr
-        return stk, bnd, gld
+        return stk, bnd - base_csh, gld, base_csh
     else:
         # 累積期 (ytr > 10)
         if age < 30:
-            return 100.0, 0.0, 0.0
+            return 98.0, 0.0, 0.0, base_csh
         elif 30 <= age < 40:
-            return 90.0, 10.0, 0.0
+            return 90.0, 8.0, 0.0, base_csh
         else: # 40 到 轉換期前
-            return 85.0, 10.0, 5.0
+            return 85.0, 8.0, 5.0, base_csh
 
 def calc_pro_alloc(age, ytr, regime, spread):
-    # 1. 取得底層生命週期基線
-    base_stk, base_bnd, base_gld = get_baseline_alloc(age, ytr)
+    # 1. 取得底層生命週期基線 (含預設 2% 現金)
+    base_stk, base_bnd, base_gld, base_csh = get_baseline_alloc(age, ytr)
     
-    # 2. 頂層：Regime 景氣動態微調 (不超過 ±10~15%)
-    adj_stk = 0; adj_bnd = 0; adj_gld = 0
-    base_regime = regime.split(" ")[0] 
+    # 2. 頂層：Regime 景氣動態微調 (嚴格限制在 ±5~10% 防過度擇時)
+    adj_stk = 0; adj_bnd = 0; adj_gld = 0; adj_csh = 0
     
-    if base_regime == "Recovery": 
-        adj_stk = 10; adj_bnd = -5; adj_gld = -5
-    elif base_regime == "Overheat": 
-        adj_stk = 5; adj_bnd = -10; adj_gld = 5
-    elif base_regime == "Stagflation": 
-        adj_stk = -15; adj_bnd = 5; adj_gld = 10
-    elif base_regime == "Recession": 
-        adj_stk = -10; adj_bnd = 10; adj_gld = 0
+    # A. 四大明確象限
+    if "明確復甦" in regime: 
+        adj_stk = 5; adj_bnd = -5; adj_gld = 0; adj_csh = 0 # 2% 現金維持
+    elif "明確過熱" in regime: 
+        adj_stk = -10; adj_bnd = 5; adj_gld = 5; adj_csh = 0 # 2% 現金維持
+    elif "明確滯脹" in regime: 
+        adj_stk = -10; adj_bnd = -2; adj_gld = 10; adj_csh = 2 # 抽血換現金：拉高至 4%
+    elif "明確衰退" in regime: 
+        adj_stk = -10; adj_bnd = 7; adj_gld = 0; adj_csh = 3 # 抽血換現金：拉高至 5% (伺機抄底)
+        
+    # B. 模糊轉折區間 (提早預判微調)
+    elif "復甦 ➡️ 過熱" in regime:
+        adj_stk = 5; adj_bnd = -5; adj_gld = 0; adj_csh = 0  # 2% 現金
+    elif "過熱 ➡️ 衰退" in regime:
+        adj_stk = -10; adj_bnd = 3; adj_gld = 5; adj_csh = 2  # 高風險：拉高防守與 4% 現金
+    elif "衰退 ➡️ 復甦" in regime:
+        adj_stk = 10; adj_bnd = -10; adj_gld = 0; adj_csh = 0 # 2% 現金 (抄底完畢)
+    elif "滯脹 ➡️ 衰退" in regime:
+        adj_stk = -5; adj_bnd = 2; adj_gld = 0; adj_csh = 3   # 退入 5% 現金
+        
+    # C. Fallback (其他偏向的模糊狀態)
+    elif "偏向：復甦" in regime: adj_stk = 5; adj_bnd = -5; adj_gld = 0; adj_csh = 0
+    elif "偏向：過熱" in regime: adj_stk = -5; adj_bnd = 0; adj_gld = 5; adj_csh = 0
+    elif "偏向：滯脹" in regime: adj_stk = -8; adj_bnd = -2; adj_gld = 8; adj_csh = 2
+    elif "偏向：衰退" in regime: adj_stk = -8; adj_bnd = 5; adj_gld = 0; adj_csh = 3
     
-    # 3. 雙確認機制 (衰退 + 倒掛)
-    if base_regime == "Recession" and spread < 0:
-        adj_stk -= 10 # 強制大幅防守
-        adj_bnd += 10
+    # 3. 雙確認機制 (實質進入多項衰退/倒掛，才疊加最高等級防守)
+    if "衰退" in regime and spread < 0:
+        adj_stk -= 5
+        adj_bnd += 5
         
     final_stk = max(base_stk + adj_stk, 0)
     final_bnd = max(base_bnd + adj_bnd, 0)
     final_gld = max(base_gld + adj_gld, 0)
+    final_csh = max(base_csh + adj_csh, 0)
     
     # 正規化以防總和不為 100%
-    total = final_stk + final_bnd + final_gld
+    total = final_stk + final_bnd + final_gld + final_csh
     if total > 0:
         final_stk = (final_stk / total) * 100
         final_bnd = (final_bnd / total) * 100
         final_gld = (final_gld / total) * 100
+        final_csh = (final_csh / total) * 100
         
-    return final_stk, final_bnd, final_gld, base_stk, base_bnd, base_gld
+    return final_stk, final_bnd, final_gld, final_csh, base_stk, base_bnd, base_gld, base_csh
 
 # 核心景氣判斷引擎 (利率 -> PMI -> CPI)
 def get_pro_regime(pmi, pmi_trend_val, cpi, cpi_trend_val, rate_dir):
@@ -306,32 +347,65 @@ def get_pro_regime(pmi, pmi_trend_val, cpi, cpi_trend_val, rate_dir):
         else: return "Neutral 模糊區 (偏向：衰退)"
 
 current_regime = get_pro_regime(pmi_input, pmi_trend, cpi_input, cpi_trend_auto, rate_direction)
-s_pct, b_pct, g_pct, b_stk, b_bnd, b_gld = calc_pro_alloc(current_age, years_to_retire, current_regime, spread_input)
+s_pct, b_pct, g_pct, c_pct, b_stk, b_bnd, b_gld, b_csh = calc_pro_alloc(current_age, years_to_retire, current_regime, spread_input)
 
 st.divider()
 
 # --- 輸出畫面 ---
 st.subheader(f"🎯 當前策略景氣：{current_regime}")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.info("📈 股票 (VT+0050)")
     st.markdown(f"<h2 style='text-align: center; color: #1E90FF;'>{s_pct:.1f}%</h2>", unsafe_allow_html=True)
     st.caption(f"中層(基底)比例: {b_stk:.1f}%")
     st.write(f"- VT (全球): {s_pct*0.667:.1f}%")
-    st.write(f"- 0050 (台灣): {s_pct*0.333:.1f}%")
+    st.write(f"- 0050: {s_pct*0.333:.1f}%")
 
 with col2:
     st.success("🛡️ 債券 (BND/TLT)")
     st.markdown(f"<h2 style='text-align: center; color: #32CD32;'>{b_pct:.1f}%</h2>", unsafe_allow_html=True)
     st.caption(f"中層(基底)比例: {b_bnd:.1f}%")
-    st.write("美國長年期避險公債")
+    st.write("避險公債")
 
 with col3:
     st.warning("⚜️ 黃金 (GLD/IAU)")
     st.markdown(f"<h2 style='text-align: center; color: #DAA520;'>{g_pct:.1f}%</h2>", unsafe_allow_html=True)
     st.caption(f"中層(基底)比例: {b_gld:.1f}%")
-    st.write("實體黃金 ETF")
+    st.write("實體黃金")
+
+with col4:
+    st.error("💵 現金 (Cash)")
+    st.markdown(f"<h2 style='text-align: center; color: #808080;'>{c_pct:.1f}%</h2>", unsafe_allow_html=True)
+    st.caption(f"流動基底: {b_csh:.1f}%")
+    st.write("生活費與抄底池")
+
+st.divider()
+st.subheader("⚖️ 偏離容忍度與再平衡建議 (Action Guidance)")
+st.markdown("""
+> **💡 再平衡交易紀律 (±5% 偏離法則)**：
+> 很多時候「🎯 **最終景氣目標**」早已超出閾值，這是否代表你現在就要交易？**答案是：不一定！**
+> 
+> 真正的觸發扳機，是看您**「券商帳戶裡真實的資產現值%」**！
+> - 若您券商裡真實的股票佔比，**仍然落在下表右側的安全範圍內**：請**強忍住不動**！這表示市場波動尚未失控，無視景氣微調目標，省出手續費與過度預判的失誤。
+> - 若您券商裡真實的股票佔比，**已經「跌破」或「漲破」了下表右側的觸發閾值**：恭喜，現在正是收割或抄底的好時機！請立刻登入帳戶下單，將所有的資產一舉校正重新對齊至 **「🎯 最終景氣目標」** 即可！
+>
+> 🔥 **血色抄底 (Value Averaging) 特殊法則**：若大盤**突然崩盤重挫 >20%**，請無視一切以上規則，**立刻授權動用所有現金池與部份防禦債券，強力買入 VT+0050**！這就是為什麼我們要在平時保留大量現金的終極致勝關鍵。
+""")
+
+reb_data = {
+    "資產類別": ["📈 股票", "🛡️ 債券", "⚜️ 黃金", "💵 現金池"],
+    "基底配置 (生命週期基線)": [f"{b_stk:.1f}%", f"{b_bnd:.1f}%", f"{b_gld:.1f}%", f"{b_csh:.1f}%"],
+    "因應景氣微調 (擇時)": [f"{s_pct - b_stk:+.1f}%", f"{b_pct - b_bnd:+.1f}%", f"{g_pct - b_gld:+.1f}%", f"{c_pct - b_csh:+.1f}%"],
+    "🎯 最終景氣目標": [f"{s_pct:.1f}%", f"{b_pct:.1f}%", f"{g_pct:.1f}%", f"{c_pct:.1f}%"],
+    "🛡️ 觸發動作閾值 (需動手執行標記)": [
+        f"真實現況 < {max(0, b_stk-5):.1f}%  或  > {min(100, b_stk+5):.1f}%",
+        f"真實現況 < {max(0, b_bnd-5):.1f}%  或  > {min(100, b_bnd+5):.1f}%",
+        f"真實現況 < {max(0, b_gld-5):.1f}%  或  > {min(100, b_gld+5):.1f}%",
+        f"生活準備金 (如過多則投入再平衡)"
+    ]
+}
+st.table(pd.DataFrame(reb_data))
 
 st.divider()
 st.subheader("🚨 核心防護機制狀態")
