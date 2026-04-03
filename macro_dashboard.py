@@ -85,45 +85,59 @@ st.sidebar.header("⚙️ 2. 當前經濟輸入")
 use_auto = st.sidebar.checkbox("使用自動抓取數據", value=(df_macro is not None))
 
 st.sidebar.markdown("""
-**👉 找不到 PMI 嗎？**  
-[點此查詢 TradingEconomics (ISM 製造業 PMI)](https://tradingeconomics.com/united-states/manufacturing-pmi)
+**👉 PMI 數據來源：**  
+[點此查詢 TradingEconomics (ISM 製造業 PMI)](https://tradingeconomics.com/united-states/manufacturing-pmi)  
+請從圖表中讀取近 3 個月數值，填入下方，系統自動幫您判斷趨勢！
 """)
 
+st.sidebar.markdown("**📊 輸入近 3 個月 PMI（從圖表讀取）**")
+pmi_col1, pmi_col2, pmi_col3 = st.sidebar.columns(3)
+with pmi_col1:
+    pmi_2m_ago = st.number_input("前2月", value=52.4, step=0.1, format="%.1f")
+with pmi_col2:
+    pmi_1m_ago = st.number_input("上月", value=51.5, step=0.1, format="%.1f")
+with pmi_col3:
+    pmi_current = st.number_input("本月", value=52.2, step=0.1, format="%.1f")
+
+# 自動判斷 PMI 趨勢 (簡化邏輯)
+pmi_input = pmi_current
+if pmi_current > pmi_1m_ago and pmi_current > pmi_2m_ago:
+    pmi_trend = "Up"
+elif pmi_current < pmi_1m_ago and pmi_current < pmi_2m_ago:
+    pmi_trend = "Down"
+else:
+    pmi_trend = "Flat"
+
+pmi_trend_labels = {"Up": "🟢 Up (上升)", "Down": "🔴 Down (下降)", "Flat": "⚪ Flat (震盪)"}
+st.sidebar.info(f"**PMI 自動趨勢判斷：{pmi_trend_labels[pmi_trend]}**")
+
 if use_auto:
-    pmi_input = st.sidebar.slider("PMI (從上述連結查詢後填入)", 30.0, 70.0, 50.0)
-    pmi_help_text = "【嚴謹判斷準則】\n\nUp (上升)：本月 > 上月 且 過去 3 個月平均呈上升 (復甦或過熱初期)\nDown (下降)：本月 < 上月 且 過去 3 個月平均呈下降 (衰退或滯脹初期)\nFlat (平穩)：PMI 變化 < ±0.5 (Neutral 過渡期)"
-    pmi_trend = st.sidebar.selectbox("PMI 近期趨勢", ["Up", "Down", "Flat"], help=pmi_help_text)
     cpi_input = cpi_yoy_latest
     spread_input = spread_latest
     vix_input = vix_latest
     rate_direction = rate_trend_str
 else:
-    pmi_input = st.sidebar.slider("手動 PMI", 30.0, 70.0, 50.0)
-    pmi_help_text = "【嚴謹判斷準則】\n\nUp (上升)：本月 > 上月 且 過去 3 個月平均呈上升 (復甦或過熱初期)\nDown (下降)：本月 < 上月 且 過去 3 個月平均呈下降 (衰退或滯脹初期)\nFlat (平穩)：PMI 變化 < ±0.5 (Neutral 過渡期)"
-    pmi_trend = st.sidebar.selectbox("手動 PMI 近期趨勢", ["Up", "Down", "Flat"], help=pmi_help_text)
     cpi_input = st.sidebar.number_input("手動 CPI YoY (%)", value=round(cpi_yoy_latest, 2))
     spread_input = st.sidebar.number_input("手動 10Y-2Y 差值", value=round(spread_latest, 2))
     vix_input = st.sidebar.number_input("手動 VIX", value=round(vix_latest, 2))
     rate_direction = st.sidebar.selectbox("手動利率趨勢", ["Up", "Down", "Flat"])
 
-with st.sidebar.expander("📚 點此查看：如何正確判斷 PMI 趨勢？", expanded=False):
+with st.sidebar.expander("📚 PMI 趨勢判斷原理", expanded=False):
     st.markdown("""
-    **【雙重確認法】（需同時滿足）**
+    **系統自動判斷邏輯（超簡單）**
     
-    🟢 **Up (上升)**：
-    1. 本月數值 > 上月數值
-    2. 近 3 個月均線 > 前期 3 個月均線。
-    *(經濟擴張實質確認)*
+    🟢 **Up (上升)**：  
+    本月 > 上月 **且** 本月 > 前2月  
+    *(連續兩個月都贏 = 真正在漲)*
 
-    🔴 **Down (下降)**：
-    1. 本月數值 < 上月數值
-    2. 近 3 個月均線 < 前期 3 個月均線。
-    *(經濟放緩實質確認)*
+    🔴 **Down (下降)**：  
+    本月 < 上月 **且** 本月 < 前2月  
+    *(連續兩個月都輸 = 真正在跌)*
 
-    ⚪ **Flat (平穩 / 震盪)**：
-    不符合上述兩者，包含：
-    1. 單月數值改變極小 (< **±0.5**)。
-    2. **或者單季震盪**：例如單月看似大漲 (V型跌深反彈)，但根本拉不動 3 個月均線上揚。此時請務必選擇 **Flat**，系統這時會保護您不被假突破而錯賣資產！
+    ⚪ **Flat (震盪)**：  
+    不符合以上條件。例如：  
+    V 型反彈（上月跌、本月漲回）→ 只是震盪，**不算真正上升**！  
+    系統此時強制「不動」，保護您不被假突破洗出場。
     """)
 
 # --- 主畫面 ---
