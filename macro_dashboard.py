@@ -76,8 +76,8 @@ else:
 
 # --- 側邊欄 ---
 st.sidebar.header("👤 1. 個人化參數")
-current_age = st.sidebar.slider("目前年齡", 18, 80, 35)
-retire_age = st.sidebar.slider("預計退休年齡", 50, 85, 65)
+current_age = st.sidebar.slider("目前年齡", 18, 80, 43)
+retire_age = st.sidebar.slider("預計退休年齡", 50, 85, 60)
 years_to_retire = retire_age - current_age
 
 st.sidebar.divider()
