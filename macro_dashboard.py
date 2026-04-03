@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import pandas_datareader.data as web
+import requests
+import io
 from datetime import datetime, timedelta
 import numpy as np
 import plotly.graph_objects as go
@@ -21,7 +22,14 @@ def fetch_data():
     try:
         # FRED 數據
         metrics = {'CPI': 'CPIAUCSL', 'Spread': 'T10Y2Y', 'Rate': 'FEDFUNDS'}
-        df = web.DataReader(list(metrics.values()), 'fred', start, end)
+        dfs = []
+        for name, code in metrics.items():
+            url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={code}&cosd={start.strftime('%Y-%m-%d')}&coed={end.strftime('%Y-%m-%d')}"
+            response = requests.get(url)
+            df = pd.read_csv(io.StringIO(response.text), index_col=0, parse_dates=True)
+            df = df.rename(columns={code: name})
+            dfs.append(df)
+        df = pd.concat(dfs, axis=1, sort=False)
         df.columns = list(metrics.keys())
         
         # 抓取 VIX
